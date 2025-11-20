@@ -7,32 +7,40 @@ from datetime import datetime
 from utils.database import get_dict_cursor_connection
 
 mobile_bp = Blueprint('mobile', __name__)
-
-# YOLO 모델 미리 로드 (한 번만)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR = os.path.join(BASE_DIR, "..", "model")
-
-try:
-    ripe_model = YOLO(os.path.join(MODEL_DIR, "ripe_straw.pt"))
-    rotten_model = YOLO(os.path.join(MODEL_DIR, "rotten_straw.pt"))
-    print("✅ YOLO 모델 로드 성공")
-    print(f"모델 경로: {MODEL_DIR}")
-
-
-except Exception as e:
-    ripe_model = None
-    rotten_model = None
-    print(f"⚠️ YOLO 모델 로드 실패: {e}")
     
 # 실제 저장 경로
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.path.join(BASE_DIR, "..", "models")
 UPLOAD_DIR = os.path.join(BASE_DIR, "..", "static", "uploads", "crop_images")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+ripe_model = None
+rotten_model = None
+
+# 🔥 YOLO 모델 로드
+def load_models():
+    global ripe_model, rotten_model
+    if ripe_model is None or rotten_model is None:
+        try:
+            from ultralytics import YOLO
+            ripe_model = YOLO(os.path.join(MODEL_DIR, "ripe_straw.pt"))
+            rotten_model = YOLO(os.path.join(MODEL_DIR, "rotten_straw.pt"))
+            print("✅ YOLO 모델 로딩 완료 (lazy load)")
+        except Exception as e:
+            print(f"❌ YOLO 로딩 실패: {e}")
+            ripe_model = None
+            rotten_model = None
 
 
 @mobile_bp.route("/predict", methods=["POST"])
 def predict():
     """Flutter → 서버로 이미지 업로드 및 YOLO 추론"""
+
+    load_models()
+
+    if ripe_model is None or rotten_model is None:
+        return jsonify({"error": "YOLO 모델을 불러올 수 없습니다."}), 500
+
     if 'file' not in request.files:
         return jsonify({"error": "파일이 없습니다."}), 400
 
@@ -44,12 +52,11 @@ def predict():
     print(f"📁 저장 경로: {file_path}")
 
     # YOLO 추론 수행
-    ripe_result = ripe_model(file_path, conf=0.2)
-    rotten_result = rotten_model(file_path, conf=0.2)
+    ripe_result = ripe_model(file_path, conf=0.25)
+    rotten_result = rotten_model(file_path, conf=0.25)
 
     print("🔥 Ripe boxes:", ripe_result[0].boxes)
     print("🔥 Ripe classes:", ripe_result[0].boxes.cls)
-    print("🔥 Ripe scores:", ripe_result[0].boxes.conf)
 
     # 라벨 리스트 추출
     ripe_labels = [ripe_model.names[int(cls)] for cls in ripe_result[0].boxes.cls]
@@ -62,11 +69,14 @@ def predict():
     # 웹 구조와 동일하게 매핑
     ripe = count_ripe.get("straw-ripe", 0)
     unripe = count_ripe.get("straw-unripe", 0)
+
     healthy = count_rotten.get("strwa_healthy", 0)      # 정상 딸기
+    rotten = count_rotten.get("starw_rotten", 0) > 0
 
-    rotten_exists = count_rotten.get("starw_rotten", 0) > 0
-
-    total = ripe + unripe
+    if (ripe + unripe) > 0:
+        total = ripe + unripe
+    else:
+        total = healthy
 
 
     # 성숙도 계산 (웹과 동일)
