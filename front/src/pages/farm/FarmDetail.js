@@ -54,6 +54,7 @@ function FarmDetail() {
   const pollingIntervalRef = useRef(null);
   const [pollingElapsedTime, setPollingElapsedTime] = useState(0);
   const pollingTimerRef = useRef(null);
+  const pollingTimeoutRef = useRef(null); // 첫 폴링 setTimeout 저장용
   const beforeCaptureStateRef = useRef(null); // 촬영 전 상태 저장
 
   // selectedBar가 변경될 때 이미지 인덱스 리셋
@@ -229,6 +230,10 @@ function FarmDetail() {
       if (pollingTimerRef.current) {
         clearInterval(pollingTimerRef.current);
         pollingTimerRef.current = null;
+      }
+      if (pollingTimeoutRef.current) {
+        clearTimeout(pollingTimeoutRef.current);
+        pollingTimeoutRef.current = null;
       }
     };
   }, []);
@@ -431,6 +436,10 @@ function FarmDetail() {
               clearInterval(pollingTimerRef.current);
               pollingTimerRef.current = null;
             }
+            if (pollingTimeoutRef.current) {
+              clearTimeout(pollingTimeoutRef.current);
+              pollingTimeoutRef.current = null;
+            }
             return;
           }
           
@@ -490,18 +499,6 @@ function FarmDetail() {
                     noChangeCount = 0;
                     lastImageCount = currentImageCount;
                     console.log(`📸 이미지 업데이트: ${currentImageCount}개 (이전: ${lastImageCount}개)`);
-                    
-                    // 첫 폴링에서 이미지가 발견되면 즉시 2초 간격으로 전환
-                    if (isFirstPoll && currentImageCount > 0) {
-                      console.log(`✅ 첫 폴링에서 이미지 발견! 즉시 2초 간격으로 전환`);
-                      isFirstPoll = false;
-                      // 기존 interval 정리하고 2초 간격으로 재설정
-                      if (pollingIntervalRef.current) {
-                        clearInterval(pollingIntervalRef.current);
-                        pollingIntervalRef.current = null;
-                      }
-                      pollingIntervalRef.current = setInterval(updateGroupsData, 2000);
-                    }
                   }
                   
                   // 첫 폴링 완료 표시 및 즉시 2초 간격으로 전환
@@ -545,6 +542,10 @@ function FarmDetail() {
                       clearInterval(pollingTimerRef.current);
                       pollingTimerRef.current = null;
                     }
+                    if (pollingTimeoutRef.current) {
+                      clearTimeout(pollingTimeoutRef.current);
+                      pollingTimeoutRef.current = null;
+                    }
                     return;
                   }
                 }
@@ -569,15 +570,27 @@ function FarmDetail() {
         
         // 첫 폴링: 7초 후 실행 (IoT가 촬영할 시간 확보)
         // 첫 폴링 완료 후 updateGroupsData 내부에서 2초 간격으로 자동 전환됨
-        setTimeout(() => {
+        pollingTimeoutRef.current = setTimeout(() => {
           updateGroupsData();
-        }, 7000); // 7초 = 7000ms
+        }, 7000); // 7초
       } else {
         alert("촬영 명령 전송 실패: " + result.message);
       }
     } catch (err) {
       setError("IoT 촬영 명령 전송에 실패했습니다.");
       alert("네트워크 오류가 발생했습니다.");
+      // 에러 발생 시 리소스 정리
+      if (pollingTimerRef.current) {
+        clearInterval(pollingTimerRef.current);
+        pollingTimerRef.current = null;
+      }
+      if (pollingTimeoutRef.current) {
+        clearTimeout(pollingTimeoutRef.current);
+        pollingTimeoutRef.current = null;
+      }
+      setIsPolling(false);
+      setPollingElapsedTime(0);
+      beforeCaptureStateRef.current = null;
     }
   };
 
@@ -915,6 +928,10 @@ function FarmDetail() {
       if (pollingTimerRef.current) {
         clearInterval(pollingTimerRef.current);
         pollingTimerRef.current = null;
+      }
+      if (pollingTimeoutRef.current) {
+        clearTimeout(pollingTimeoutRef.current);
+        pollingTimeoutRef.current = null;
       }
       // 촬영 전 상태로 복원
       if (beforeCaptureStateRef.current) {
