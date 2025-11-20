@@ -50,6 +50,11 @@ function FarmDetail() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
+  const [isPolling, setIsPolling] = useState(false);
+  const pollingIntervalRef = useRef(null);
+  const [pollingElapsedTime, setPollingElapsedTime] = useState(0);
+  const pollingTimerRef = useRef(null);
+  const beforeCaptureStateRef = useRef(null); // 촬영 전 상태 저장
 
   // selectedBar가 변경될 때 이미지 인덱스 리셋
   useEffect(() => {
@@ -214,6 +219,20 @@ function FarmDetail() {
     }
   }, [groups, groupAxis]);
 
+  // 폴링 cleanup
+  useEffect(() => {
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+      if (pollingTimerRef.current) {
+        clearInterval(pollingTimerRef.current);
+        pollingTimerRef.current = null;
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (!selectedGh) return;
     setSensorLoading(true);
@@ -349,6 +368,7 @@ function FarmDetail() {
 
   const handleCaptureConfirm = async () => {
     if (!selectedCaptureBar || !selectedCaptureIot) return;
+    
     try {
       const response = await fetch(
         `${API_BASE_URL}/api/greenhouses/crop_groups/read`,
@@ -372,72 +392,186 @@ function FarmDetail() {
       if (response.ok) {
         alert("IoT 촬영 명령이 전송되었습니다. 잠시 후 결과가 업데이트됩니다.");
 
-        // 5초 후 그룹 데이터를 다시 가져와서 분석 결과 반영
-        setTimeout(async () => {
-          if (selectedGh) {
-            try {
-              const groupsResponse = await fetch(
-                `${API_BASE_URL}/api/greenhouses/${selectedGh.id}/groups`,
-                {
-                  credentials: "include",
+        // 촬영 전 상태 저장 (강제 종료 시 복원용)
+        beforeCaptureStateRef.current = {
+          selectedBar: selectedBar ? JSON.parse(JSON.stringify(selectedBar)) : null,
+          groups: groups ? JSON.parse(JSON.stringify(groups)) : null,
+        };
+
+        // 촬영한 그룹 ID 저장 (폴링 중에도 사용)
+        const capturedGroupId = selectedCaptureBar?.id;
+        
+        // 폴링 시작: 2초마다 데이터 갱신
+        // 이미지가 더 이상 업데이트되지 않으면 자동 중단
+        setIsPolling(true);
+        setPollingElapsedTime(0);
+        
+        // 경과 시간 타이머 시작 (1초마다 업데이트)
+        pollingTimerRef.current = setInterval(() => {
+          setPollingElapsedTime((prev) => prev + 1);
+        }, 1000);
+        let pollCount = 0;
+        const maxPolls = 45; // 최대 90초 (2초 * 45)
+        let lastImageCount = 0;
+        let noChangeCount = 0; 
+        const maxNoChangePolls = 3; // 3회 연속 변화 없음 = 6초 대기
+        let isFirstPoll = true; // 첫 폴링 여부
+        
+        const updateGroupsData = async () => {
+          if (!selectedGh || pollCount >= maxPolls) {
+            // 최대 폴링 시간 초과 - 상태 저장 초기화
+            beforeCaptureStateRef.current = null;
+            setIsPolling(false);
+            setPollingElapsedTime(0);
+            if (pollingIntervalRef.current) {
+              clearInterval(pollingIntervalRef.current);
+              pollingIntervalRef.current = null;
+            }
+            if (pollingTimerRef.current) {
+              clearInterval(pollingTimerRef.current);
+              pollingTimerRef.current = null;
+            }
+            return;
+          }
+          
+          try {
+            const groupsResponse = await fetch(
+              `${API_BASE_URL}/api/greenhouses/${selectedGh.id}/groups`,
+              {
+                credentials: "include",
+              }
+            );
+            if (groupsResponse.ok) {
+              const groupsData = await groupsResponse.json();
+
+              // 그룹을 안정적으로 정렬하여 위치가 변하지 않도록 함
+              const sortedGroups = [...groupsData.groups].sort((a, b) => {
+                const aCells = a.group_cells || [];
+                const bCells = b.group_cells || [];
+                if (aCells.length === 0 && bCells.length === 0) return 0;
+                if (aCells.length === 0) return 1;
+                if (bCells.length === 0) return -1;
+
+                const aFirst = aCells[0];
+                const bFirst = bCells[0];
+
+                // 행 기준 정렬, 같으면 열 기준
+                if (aFirst[0] !== bFirst[0]) {
+                  return aFirst[0] - bFirst[0];
                 }
-              );
-              if (groupsResponse.ok) {
-                const groupsData = await groupsResponse.json();
+                return aFirst[1] - bFirst[1];
+              });
 
-                // 그룹을 안정적으로 정렬하여 위치가 변하지 않도록 함
-                const sortedGroups = [...groupsData.groups].sort((a, b) => {
-                  const aCells = a.group_cells || [];
-                  const bCells = b.group_cells || [];
-                  if (aCells.length === 0 && bCells.length === 0) return 0;
-                  if (aCells.length === 0) return 1;
-                  if (bCells.length === 0) return -1;
+              setGroups(sortedGroups);
+              setGroupAxis(groupsData.axis);
 
-                  const aFirst = aCells[0];
-                  const bFirst = bCells[0];
-
-                  // 행 기준 정렬, 같으면 열 기준
-                  if (aFirst[0] !== bFirst[0]) {
-                    return aFirst[0] - bFirst[0];
-                  }
-                  return aFirst[1] - bFirst[1];
-                });
-
-                setGroups(sortedGroups);
-                setGroupAxis(groupsData.axis);
-
-                // 촬영한 그룹의 업데이트된 정보로 selectedBar 업데이트
-                if (selectedCaptureBar) {
-                  const updatedGroup = sortedGroups.find(
-                    (g) => g.id === selectedCaptureBar.id
-                  );
-                  if (updatedGroup) {
-                    if (
-                      selectedBar &&
-                      selectedBar.group.id === selectedCaptureBar.id
-                    ) {
-                      setSelectedBar({
-                        ...selectedBar,
-                        group: updatedGroup,
-                      });
+              // 촬영한 그룹의 업데이트된 정보로 selectedBar 업데이트
+              // 서버에서 이미 누적된 analyzed_files를 받으므로 그대로 사용
+              if (capturedGroupId) {
+                const updatedGroup = sortedGroups.find(
+                  (g) => g.id === capturedGroupId
+                );
+                if (updatedGroup) {
+                  // 현재 이미지 개수 확인
+                  const currentImageCount = updatedGroup.last_analysis_result?.analyzed_files?.length || 0;
+                  
+                  // 이미지 개수가 변했는지 확인
+                  let shouldStopPolling = false;
+                  if (currentImageCount === lastImageCount) {
+                    // 변화 없음
+                    noChangeCount++;
+                    if (noChangeCount >= maxNoChangePolls) {
+                      // 연속으로 변화가 없으면 폴링 중단 (하지만 마지막 데이터는 반영)
+                      console.log(`✅ 촬영 완료: ${currentImageCount}개 이미지 수신 완료. 폴링 중단.`);
+                      shouldStopPolling = true;
+                    }
+                  } else {
+                    // 변화 있음 - 카운터 리셋
+                    noChangeCount = 0;
+                    lastImageCount = currentImageCount;
+                    console.log(`📸 이미지 업데이트: ${currentImageCount}개 (이전: ${lastImageCount}개)`);
+                    
+                    // 첫 폴링에서 이미지가 발견되면 즉시 2초 간격으로 전환
+                    if (isFirstPoll && currentImageCount > 0) {
+                      console.log(`✅ 첫 폴링에서 이미지 발견! 즉시 2초 간격으로 전환`);
+                      isFirstPoll = false;
+                      // 기존 interval 정리하고 2초 간격으로 재설정
+                      if (pollingIntervalRef.current) {
+                        clearInterval(pollingIntervalRef.current);
+                        pollingIntervalRef.current = null;
+                      }
+                      pollingIntervalRef.current = setInterval(updateGroupsData, 2000);
                     }
                   }
+                  
+                  // 첫 폴링 완료 표시 및 즉시 2초 간격으로 전환
+                  if (isFirstPoll) {
+                    isFirstPoll = false;
+                    // 첫 폴링이 끝나면 이미지 유무와 관계없이 2초 간격으로 전환
+                    if (!pollingIntervalRef.current) {
+                      console.log(`✅ 첫 폴링 완료! 2초 간격으로 전환`);
+                      pollingIntervalRef.current = setInterval(updateGroupsData, 2000);
+                    }
+                  }
+                  
+                  // 웹에 데이터 반영 (폴링 중단 전에 반영)
+                  if (
+                    selectedBar &&
+                    selectedBar.group.id === capturedGroupId
+                  ) {
+                    // 서버에서 받은 그룹 데이터를 그대로 사용
+                    // analyzed_files는 서버에서 이미 누적되어 있음
+                    setSelectedBar({
+                      ...selectedBar,
+                      group: {
+                        ...selectedBar.group,
+                        ...updatedGroup,  // 서버에서 받은 최신 데이터로 업데이트
+                        // last_analysis_result는 서버에서 이미 누적된 배열을 포함
+                      },
+                    });
+                  }
+                  
+                  // 폴링 중단 (데이터 반영 후)
+                  if (shouldStopPolling) {
+                    // 촬영 완료 - 상태 저장 초기화
+                    beforeCaptureStateRef.current = null;
+                    setIsPolling(false);
+                    setPollingElapsedTime(0);
+                    if (pollingIntervalRef.current) {
+                      clearInterval(pollingIntervalRef.current);
+                      pollingIntervalRef.current = null;
+                    }
+                    if (pollingTimerRef.current) {
+                      clearInterval(pollingTimerRef.current);
+                      pollingTimerRef.current = null;
+                    }
+                    return;
+                  }
                 }
               }
-
-              // 센서 데이터 갱신
-              const sensorResponse = await fetch(
-                `${API_BASE_URL}/api/sensor/latest?gh_id=${selectedGh.id}`
-              );
-              if (sensorResponse.ok) {
-                const sensorData = await sensorResponse.json();
-                setSensorData(sensorData);
-              }
-            } catch (err) {
-              console.error("데이터 갱신 실패:", err);
             }
+
+            // 센서 데이터 갱신
+            const sensorResponse = await fetch(
+              `${API_BASE_URL}/api/sensor/latest?gh_id=${selectedGh.id}`
+            );
+            if (sensorResponse.ok) {
+              const sensorData = await sensorResponse.json();
+              setSensorData(sensorData);
+            }
+            
+            pollCount++;
+          } catch (err) {
+            console.error("데이터 갱신 실패:", err);
+            pollCount++;
           }
-        }, 5000);
+        };
+        
+        // 첫 폴링: 7초 후 실행 (IoT가 촬영할 시간 확보)
+        // 첫 폴링 완료 후 updateGroupsData 내부에서 2초 간격으로 자동 전환됨
+        setTimeout(() => {
+          updateGroupsData();
+        }, 7000); // 7초 = 7000ms
       } else {
         alert("촬영 명령 전송 실패: " + result.message);
       }
@@ -763,8 +897,90 @@ function FarmDetail() {
     );
   };
 
+  // 경과 시간을 분:초 형식으로 변환
+  const formatElapsedTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // 강제 종료 함수
+  const handleForceStop = () => {
+    if (window.confirm("촬영 및 분석을 중단하시겠습니까?\n촬영 버튼을 누르기 전 상태로 복원됩니다.")) {
+      // 모든 타이머 정리
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+      if (pollingTimerRef.current) {
+        clearInterval(pollingTimerRef.current);
+        pollingTimerRef.current = null;
+      }
+      // 촬영 전 상태로 복원
+      if (beforeCaptureStateRef.current) {
+        if (beforeCaptureStateRef.current.selectedBar) {
+          setSelectedBar(beforeCaptureStateRef.current.selectedBar);
+        }
+        if (beforeCaptureStateRef.current.groups) {
+          setGroups(beforeCaptureStateRef.current.groups);
+        }
+        beforeCaptureStateRef.current = null;
+      }
+      
+      // 로딩 상태 초기화
+      setIsPolling(false);
+      setPollingElapsedTime(0);
+    }
+  };
+
   return (
     <div className="farmdetail-container">
+      {/* 촬영 및 분석 중 로딩 오버레이 */}
+      {isPolling && (
+        <div className="capture-loading-overlay">
+          <div className="capture-loading-content">
+            <div className="capture-loading-spinner">
+              <div className="spinner-ring"></div>
+              <div className="spinner-ring"></div>
+              <div className="spinner-ring"></div>
+            </div>
+            <div className="capture-loading-text">
+              <h3>촬영 및 분석 중...</h3>
+              <p>경과 시간: {formatElapsedTime(pollingElapsedTime)}</p>
+              <p className="capture-loading-subtitle">
+                IoT 디바이스가 촬영하고 있습니다.<br />
+                이미지 분석이 완료되면 자동으로 표시됩니다.
+              </p>
+              <button
+                onClick={handleForceStop}
+                className="capture-loading-cancel-btn"
+                style={{
+                  marginTop: '20px',
+                  padding: '10px 24px',
+                  backgroundColor: '#dc3545',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  transition: 'all 0.2s ease',
+                }}
+                onMouseOver={(e) => {
+                  e.target.style.backgroundColor = '#c82333';
+                  e.target.style.transform = 'scale(1.05)';
+                }}
+                onMouseOut={(e) => {
+                  e.target.style.backgroundColor = '#dc3545';
+                  e.target.style.transform = 'scale(1)';
+                }}
+              >
+                강제 종료
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <aside className={`farmdetail-sidebar${sidebarOpen ? "" : " closed"}`}>
         <div className="farmdetail-sidebar-header">
           <h3

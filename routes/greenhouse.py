@@ -765,11 +765,12 @@ def iot_image_upload():
             total = 5
             has_rotten = False
 
-        # 기존 분석 결과 조회
+        # 기존 분석 결과 조회 (동시 업데이트 방지를 위해 FOR UPDATE 사용)
         cur.execute("""
             SELECT last_analysis_result, harvest_amount, total_amount, is_read
             FROM crop_groups
             WHERE id = %s
+            FOR UPDATE
         """, (group_id,))
         existing_result = cur.fetchone()
         
@@ -790,7 +791,8 @@ def iot_image_upload():
                 if current_session_start:
                     # analyzed_files 배열이 있으면 사용 (같은 세션 내)
                     if isinstance(existing_analysis, dict) and 'analyzed_files' in existing_analysis:
-                        analyzed_files = existing_analysis['analyzed_files']
+                        # 기존 배열을 복사 (참조가 아닌 값 복사)
+                        analyzed_files = list(existing_analysis['analyzed_files'])
                         # 기존 총합 계산
                         for file_data in analyzed_files:
                             total_ripe += file_data.get('ripe', 0)
@@ -800,7 +802,7 @@ def iot_image_upload():
                                 has_any_rotten = True
                     # 단일 이미지 형식인 경우 (하위 호환성)
                     elif isinstance(existing_analysis, dict) and 'filename' in existing_analysis:
-                        analyzed_files = [existing_analysis]
+                        analyzed_files = [dict(existing_analysis)]  # 복사본 생성
                         total_ripe = existing_analysis.get('ripe', 0)
                         total_unripe = existing_analysis.get('unripe', 0)
                         total_count = existing_analysis.get('total', 0)
@@ -818,7 +820,7 @@ def iot_image_upload():
         if not current_session_start:
             current_session_start = datetime.now().isoformat()
         
-        # 새 이미지 분석 결과 추가
+        # 새 이미지 분석 결과 추가 (중복 체크)
         new_file_result = {
             'filename': unique_filename,
             'ripe': ripe,
@@ -828,7 +830,14 @@ def iot_image_upload():
             'iot_id': iot_id,
             'analyzed_at': datetime.now().isoformat()
         }
-        analyzed_files.append(new_file_result)
+        
+        # 같은 파일명이 이미 있는지 확인 (중복 방지)
+        existing_filenames = {f.get('filename') for f in analyzed_files}
+        if unique_filename not in existing_filenames:
+            analyzed_files.append(new_file_result)
+            print(f"✅ 새 이미지 추가: {unique_filename} (총 {len(analyzed_files)}개)")
+        else:
+            print(f"⚠️ 이미 존재하는 이미지: {unique_filename}, 건너뜀")
         
         # 총합 업데이트
         total_ripe += ripe
