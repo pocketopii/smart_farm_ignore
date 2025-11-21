@@ -419,7 +419,7 @@ function FarmDetail() {
         const maxPolls = 45; // 최대 90초 (2초 * 45)
         let lastImageCount = 0;
         let noChangeCount = 0; 
-        const maxNoChangePolls = 3; // 3회 연속 변화 없음 = 6초 대기
+        const maxNoChangePolls = 4; // 3회 연속 변화 없음 = 6초 대기
         let isFirstPoll = true; // 첫 폴링 여부
         
         const updateGroupsData = async () => {
@@ -507,7 +507,7 @@ function FarmDetail() {
                     // 첫 폴링이 끝나면 이미지 유무와 관계없이 2초 간격으로 전환
                     if (!pollingIntervalRef.current) {
                       console.log(`✅ 첫 폴링 완료! 2초 간격으로 전환`);
-                      pollingIntervalRef.current = setInterval(updateGroupsData, 2000);
+                      pollingIntervalRef.current = setInterval(updateGroupsData, 3000);
                     }
                   }
                   
